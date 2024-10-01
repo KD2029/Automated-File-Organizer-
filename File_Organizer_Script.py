@@ -9,13 +9,12 @@ import hashlib
 
 # Set up logging
 logging.basicConfig(
-    filename='file_organizer.log',  # Specify the log file name
-    filemode='a',                    # Append mode
+    filename='file_organizer.log',
+    filemode='a',
     format='%(asctime)s - %(levelname)s - %(message)s',
-    level=logging.INFO                # Set the logging level to INFO
+    level=logging.INFO
 )
 
-# Log the start of the script
 logging.info("Script started.")
 
 # File paths
@@ -35,12 +34,12 @@ else:
     processed_df = pd.DataFrame(columns=['Individual Name', 'Parish Name', 'Status'])
     processed_df.to_excel(processed_individuals_file, index=False, engine='odf')
 
-# Initialize hierarchy cache and not found counts.
+# Initialize hierarchy cache
 hierarchy_cache = {}
 not_found_counts = {}
 
 def get_directory_hash(directory):
-    """ Generate a hash of the directory structure to detect changes. """
+    """Generate a hash of the directory structure to detect changes."""
     dir_hash = hashlib.sha256()
     for root, dirs, files in os.walk(directory):
         for d in dirs:
@@ -58,28 +57,27 @@ def load_hierarchy():
         with open(hierarchy_cache_file, 'r') as f:
             cached_data = json.load(f)
 
-        # Check if directory structure has changed
         if cached_data.get("hash") == current_hash:
             logging.info('No changes in the base directory. Using cached hierarchy.')
             hierarchy_cache = cached_data.get("hierarchy")
         else:
             logging.info('Changes detected in the base directory. Reprocessing hierarchy.')
             hierarchy_cache = process_hierarchy()
-            save_hierarchy_to_cache(current_hash)  # Save with the new hash
+            save_hierarchy_to_cache(current_hash)
     else:
         logging.info('No cached hierarchy found. Processing and caching hierarchy.')
         hierarchy_cache = process_hierarchy()
         save_hierarchy_to_cache(current_hash)
 
 def save_hierarchy_to_cache(current_hash):
-    """ Save the hierarchy and the current hash to cache. """
+    """Save the hierarchy and the current hash to cache."""
     with open(hierarchy_cache_file, 'w') as f:
         cache_data = {"hierarchy": hierarchy_cache, "hash": current_hash}
         json.dump(cache_data, f)
     save_hierarchy_to_excel()
 
 def save_hierarchy_to_excel():
-    """ Save the hierarchy to an Excel file. """
+    """Save the hierarchy to an Excel file."""
     if not hierarchy_cache or 'Archdeaconry' not in hierarchy_cache:
         logging.error("Hierarchy is empty or malformed. Cannot save to Excel.")
         return
@@ -87,31 +85,27 @@ def save_hierarchy_to_excel():
     archdeaconry_list = []
     parish_list = []
     sub_parish_list = []
-    # Go through the hierarchy and collect data
+
     for arch, parishes in hierarchy_cache['Archdeaconry'].items():
         for parish, sub_parishes in parishes.items():
-            if sub_parishes:
-                for sub_parish in sub_parishes:
-                    archdeaconry_list.append(arch)
-                    parish_list.append(parish)
-                    sub_parish_list.append(sub_parish)
-            else:
-                # If there are no sub-parishes, append an empty string
-                archdeaconry_list.append(arch)
-                parish_list.append(parish)
-                sub_parish_list.append("")
+            archdeaconry_list.append(arch)
+            parish_list.append(parish)
+            sub_parish_list.extend([f"{parish} - {sub_parish}" for sub_parish in sub_parishes])
 
-    # Log the number of entries being saved
+    # Ensure all lists have the same length by padding with empty strings
+    max_length = max(len(archdeaconry_list), len(parish_list), len(sub_parish_list))
+    archdeaconry_list.extend([""] * (max_length - len(archdeaconry_list)))
+    parish_list.extend([""] * (max_length - len(parish_list)))
+    sub_parish_list.extend([""] * (max_length - len(sub_parish_list)))
+
     logging.info(f"Saving {len(archdeaconry_list)} entries to {hierarchy_excel_file}")
 
-    # Create DataFrame from the lists
     hierarchy_df = pd.DataFrame({
         'Archdeaconry': archdeaconry_list,
         'Parish': parish_list,
         'Sub-Parish': sub_parish_list
     })
 
-    # Save the DataFrame to Excel
     try:
         hierarchy_df.to_excel(hierarchy_excel_file, index=False)
         logging.info(f"Hierarchy successfully saved to {hierarchy_excel_file}")
@@ -119,31 +113,52 @@ def save_hierarchy_to_excel():
         logging.error(f"Failed to save hierarchy to Excel: {e}")
 
 def process_hierarchy():
-    hierarchy = {'Archdeaconry': {}, 'Parish': {}, 'Sub-Parish': {}}
+    """Process the base directory hierarchy to capture Archdeaconry, Parish, and Sub-Parish correctly."""
+    hierarchy = {'Archdeaconry': {}}
+
+    # First, identify all Archdeaconries
     for root, dirs, files in os.walk(base_dir):
         for d in dirs:
-            if 'arch' in d.lower():
-                hierarchy['Archdeaconry'][d] = {}
-            elif 'parish' in d.lower():
-                parent_arch = os.path.basename(root)
-                if parent_arch in hierarchy['Archdeaconry']:
-                    hierarchy['Archdeaconry'][parent_arch][d] = {}
-            elif 'sub parish' in d.lower():
-                parent_parish = os.path.basename(root)
-                for arch in hierarchy['Archdeaconry']:
-                    if parent_parish in hierarchy['Archdeaconry'][arch]:
-                        hierarchy['Archdeaconry'][arch][parent_parish][d] = {}
+            lower_d = d.lower()
+            # Check if the current directory is an archdeaconry
+            if 'arch' in lower_d:
+                archdeaconry = d
+                hierarchy['Archdeaconry'][archdeaconry] = {}  # Initialize the archdeaconry
+                logging.info(f"Found Archdeaconry: {archdeaconry}")
+
+                # Now check for parishes within this archdeaconry
+                parish_path = os.path.join(root, d)
+                for parish_dir in os.listdir(parish_path):
+                    if 'parish' in parish_dir.lower():
+                        hierarchy['Archdeaconry'][archdeaconry][parish_dir] = []  # Initialize with an empty list for sub-parishes
+                        logging.info(f"Found Parish: {parish_dir} under Archdeaconry: {archdeaconry}")
+
+                        # Now check for sub-parishes within this parish
+                        sub_parish_path = os.path.join(parish_path, parish_dir)
+                        for sub_parish_dir in os.listdir(sub_parish_path):
+                            if 'sub parish' in sub_parish_dir.lower() or 'sub-parish' in sub_parish_dir.lower():
+                                hierarchy['Archdeaconry'][archdeaconry][parish_dir].append(sub_parish_dir)  # Add to the sub-parish list
+                                logging.info(f"Found Sub-Parish: {sub_parish_dir} under Parish: {parish_dir} in Archdeaconry: {archdeaconry}")
+
     return hierarchy
 
+
+
+
+
 def find_individual_folder(base_dir, individual_name):
-    """ Recursively search for an individual folder with a high similarity to the individual name. """
+    """Recursively search for an individual folder with a high similarity to the individual name."""
+    if pd.isna(individual_name):
+        logging.warning(f"Individual name is NaN. Skipping search.")
+        return None, None
+
+    individual_name = str(individual_name)
+    
     for root, dirs, files in os.walk(base_dir):
         for dir_name in dirs:
-            # Lowercase conversion for case-insensitive matching
             lower_individual_name = individual_name.lower()
             lower_dir_name = dir_name.lower()
-            
-            # Partial matching with a threshold of 80% similarity
+
             similarity = fuzz.token_set_ratio(lower_individual_name, lower_dir_name)
             if similarity > 80:
                 return os.path.join(root, dir_name), dir_name
@@ -151,9 +166,12 @@ def find_individual_folder(base_dir, individual_name):
 
 def process_individual(individual, parish_name):
     global processed_df
-    # Skip already processed individuals
+
     processed_status = processed_df[processed_df['Individual Name'].str.strip() == individual]['Status'].values
-    if processed_status.size > 0:
+    
+    if processed_status.size == 0:
+        logging.info(f"Processing new entry for {individual}.")
+    elif processed_status.size > 0:
         status = processed_status[0]
         if status == 'File Exists':
             logging.info(f'Individual {individual} already processed. Skipping.')
@@ -161,92 +179,92 @@ def process_individual(individual, parish_name):
         elif status == 'Folder Not Found':
             logging.info(f'Reprocessing individual {individual}.')
 
-    # Find the individual folder
     individual_folder_path, actual_folder_name = find_individual_folder(base_dir, individual)
+    
     if individual_folder_path:
-        logging.info(f'Found individual folder for {individual}: {individual_folder_path}')
+        logging.info(f'Found individual folder for {individual}: {actual_folder_name}')
         
-        # Add the additional characters from the folder name to the individual name
         individual_with_folder_name = f"{individual} ({actual_folder_name})"
         logging.info(f"Updated individual name with folder name: {individual_with_folder_name}")
-        
-        # Find the correct location in the hierarchy
+
         found_parish = None
         found_archdeaconry = None
+        found_sub_parish = None
 
-        # Search for the parish directly in the cached hierarchy
+        # Search for the parish or sub-parish in the cached hierarchy
         for arch, parishes in hierarchy_cache['Archdeaconry'].items():
             if parish_name in parishes:
                 found_parish = parish_name
                 found_archdeaconry = arch
                 break
-        
-        if found_parish:
-            # Log the Archdeaconry and Parish where the match was found
-            logging.info(f"Match found: Archdeaconry '{found_archdeaconry}', Parish '{found_parish}' for individual '{individual}'.")
-
-            sub_parish = None
-            sub_parishes = hierarchy_cache['Archdeaconry'][found_archdeaconry].get(found_parish, {})
-            for sp in sub_parishes:
-                if fuzz.ratio(parish_name.lower(), sp.lower()) > 90:
-                    sub_parish = sp
-                    break
-
-            # Determine the destination path
-            dest_path = os.path.join(dest_base_dir, found_archdeaconry, found_parish, actual_folder_name)
-
-            # Check if the destination path already exists
-            if os.path.exists(dest_path):
-                logging.info(f"Folder '{dest_path}' already exists for individual '{individual}'. Logging and skipping.")
-                processed_df.loc[processed_df['Individual Name'] == individual, 'Status'] = 'File Exists'
-                return  # Move on to the next individual
-
-            # Copy the folder to the destination
-            try:
-                shutil.copytree(individual_folder_path, dest_path)
-                logging.info(f"Copied individual folder '{actual_folder_name}' to '{dest_path}'.")
-                processed_df.loc[processed_df['Individual Name'] == individual, 'Status'] = 'File Exists'
-            except Exception as e:
-                logging.warning(f"Failed to copy folder '{actual_folder_name}' for '{individual}': {e}")
-                processed_df.loc[processed_df['Individual Name'] == individual, 'Status'] = 'Error'
-        else:
-            # If parish is not found, log the folder not found message
-            not_found_counts[individual] = not_found_counts.get(individual, 0) + 1
-            
-            if not_found_counts[individual] < 4:
-                logging.warning(f"Folder for individual '{individual}' not found in parish '{parish_name}'. Attempt {not_found_counts[individual]}.")
-                processed_df.loc[processed_df['Individual Name'] == individual, 'Status'] = 'Folder Not Found'
             else:
-                logging.info(f"Folder for individual '{individual}' has been logged as not found 3 times. Skipping further logs.")
-                processed_df.loc[processed_df['Individual Name'] == individual, 'Status'] = 'Folder Not Found (Max Attempts Reached)'
+                for sub_parish in parishes.values():
+                    if parish_name in sub_parish:  # Check if parish name is in the sub-parish list
+                        found_sub_parish = parish_name
+                        found_parish = list(parishes.keys())[list(parishes.values()).index(sub_parish)]  # Get the corresponding parish
+                        found_archdeaconry = arch
+                        break
+
+        if found_parish:
+            if found_sub_parish:
+                destination_folder = os.path.join(
+                    dest_base_dir, found_archdeaconry, found_parish,
+                    found_sub_parish
+                )
+            else:
+                destination_folder = os.path.join(
+                    dest_base_dir, found_archdeaconry, found_parish
+                )
+                
+            logging.info(f"Destination folder for {individual}: {destination_folder}")
+            Path(destination_folder).mkdir(parents=True, exist_ok=True)
+            
+            destination_path = os.path.join(destination_folder, individual_with_folder_name)
+            if not os.path.exists(destination_path):
+                shutil.copytree(individual_folder_path, destination_path)
+                processed_df = pd.concat([processed_df, pd.DataFrame([{
+                    'Individual Name': individual,
+                    'Parish Name': parish_name,
+                    'Status': 'File Exists'
+                }])], ignore_index=True)
+                logging.info(f"Copied {individual} to {destination_path}.")
+            else:
+                logging.warning(f"Destination already exists: {destination_path}. Skipping copy.")
+        else:
+            if parish_name not in not_found_counts:
+                not_found_counts[parish_name] = 0
+            not_found_counts[parish_name] += 1
+            logging.warning(f"Parish not found in hierarchy: {parish_name}. Total not found: {not_found_counts[parish_name]}.")
+
+            processed_df = pd.concat([processed_df, pd.DataFrame([{
+                'Individual Name': individual,
+                'Parish Name': parish_name,
+                'Status': 'Folder Not Found'
+            }])], ignore_index=True)
+    else:
+        logging.warning(f"No folder found for individual {individual}.")
+        processed_df = pd.concat([processed_df, pd.DataFrame([{
+            'Individual Name': individual,
+            'Parish Name': parish_name,
+            'Status': 'Folder Not Found'
+        }])], ignore_index=True)
 
 def main():
-    load_hierarchy()  # Load or process the hierarchy
+    load_hierarchy()
 
-    # Read individual names and parish names from the file structure Excel
-    try:
-        individuals_df = pd.read_excel(file_path, engine='odf')
+    # Read individual names and parish names from the Excel file
+    individuals_df = pd.read_excel(file_path, engine='odf')
+    individuals_df['Individual Name'] = individuals_df['Individual Name'].replace('nan', '').fillna('')
+    individuals_df['Parish Name'] = individuals_df['Parish Name'].replace('nan', '').fillna('')
+
+    for _, row in individuals_df.iterrows():
+        individual = row['Individual Name'].strip()
+        parish_name = row['Parish Name'].strip()
         
-        # Convert individual names and parish names to strings, and filter out NaN values
-        individuals_df['Individual Name'] = individuals_df['Individual Name'].astype(str).str.strip()
-        individuals_df['Parish Name'] = individuals_df['Parish Name'].astype(str).str.strip()
+        if individual and parish_name:
+            process_individual(individual, parish_name)
 
-        # Drop rows where 'Individual Name' or 'Parish Name' is empty
-        individuals_df.dropna(subset=['Individual Name', 'Parish Name'], inplace=True)
-
-        individual_names = individuals_df['Individual Name'].tolist()
-        parish_names = individuals_df['Parish Name'].tolist()
-    except Exception as e:
-        logging.error(f"Error reading individual and parish names from Excel: {e}")
-        return
-
-    # Process each individual with their corresponding parish name
-    for individual, parish_name in zip(individual_names, parish_names):
-        process_individual(individual, parish_name)
-
-    # Save the updated processed individuals DataFrame
     processed_df.to_excel(processed_individuals_file, index=False, engine='odf')
-    logging.info(f"Updated processed individuals saved to {processed_individuals_file}")
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
